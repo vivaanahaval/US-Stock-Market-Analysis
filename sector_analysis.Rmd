@@ -1,0 +1,352 @@
+---
+title: "SPDR Sector Fund Analysis"
+subtitle: "US Stock Market - 10 Year Sector Performance"
+author: "Generated via R & Yahoo Finance"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: darkly
+    highlight: monokai
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Setup & Data Retrieval
+
+```{r libraries}
+library(quantmod)
+library(dplyr)
+library(gt)
+library(TTR)
+library(lubridate)
+library(ggplot2)
+library(tidyr)
+```
+
+```{r config}
+# SPDR Sector ETFs
+sector_etfs <- data.frame(
+  Symbol = c("XLK", "XLI", "XLU", "XLY", "XLF", "XLB", "XLC", "XLV", "XLP", "XLRE", "XLE"),
+  Sector = c("Technology", "Industrial", "Utilities", "Consumer Discretionary",
+             "Financial", "Materials", "Communication", "Health Care",
+             "Consumer Staples", "Real Estate", "Energy"),
+  stringsAsFactors = FALSE
+)
+
+# Last 10 years
+end_date <- Sys.Date()
+start_date <- end_date - years(10)
+```
+
+```{r fetch-data, cache=TRUE}
+# Fetch 10 years of data from Yahoo Finance
+all_data <- list()
+for (sym in sector_etfs$Symbol) {
+  tryCatch({
+    all_data[[sym]] <- getSymbols(sym, src = "yahoo", from = start_date, to = end_date, auto.assign = FALSE)
+    cat(sprintf("[OK] %s loaded\n", sym))
+  }, error = function(e) {
+    cat(sprintf("[ERROR] %s: %s\n", sym, e$message))
+  })
+}
+```
+
+## Sector Analysis Functions
+
+```{r functions}
+# Trend Strength: 20-day MA momentum
+calc_trend_strength <- function(prices, period = 20) {
+  if (length(prices) < period + 1) return(0)
+  ma <- SMA(prices, n = period)
+  ma_clean <- na.omit(ma)
+  n <- length(ma_clean)
+  if (n <= period) return(0)
+  current_ma <- ma_clean[n]
+  past_ma <- ma_clean[n - period]
+  if (is.na(current_ma) || is.na(past_ma) || past_ma == 0) return(0)
+  return(round(((current_ma - past_ma) / past_ma) * 100, 2))
+}
+
+# Trend label classification
+get_trend_label <- function(trend_pct) {
+  strength <- ifelse(abs(trend_pct) > 2.0, "Strong ", "")
+  if (trend_pct > 0.5) return(paste0(strength, "Bullish"))
+  if (trend_pct < -0.5) return(paste0(strength, "Bearish"))
+  return("Neutral")
+}
+
+# Regime Score (0 = Lagging, 1 = Weakening, 2 = Improving, 3 = Leading)
+calc_regime_score <- function(change_pct, trend_pct) {
+  score <- 0
+  if (change_pct > 1.0) score <- score + 1
+  if (change_pct < -1.0) score <- score - 1
+  if (trend_pct > 1.0) score <- score + 1
+  if (trend_pct < -1.0) score <- score - 1
+  if (abs(trend_pct) > 2.5) {
+    if (trend_pct > 0) score <- score + 1 else score <- score - 1
+  }
+  return(max(0, min(3, score + 1)))
+}
+
+get_regime_label <- function(score) {
+  c("Lagging", "Weakening", "Improving", "Leading")[score + 1]
+}
+```
+
+## Calculate Sector Metrics
+
+```{r calculate-metrics}
+results <- data.frame()
+
+for (i in 1:nrow(sector_etfs)) {
+  sym <- sector_etfs$Symbol[i]
+  data <- all_data[[sym]]
+  if (is.null(data)) next
+
+  prices <- as.numeric(Cl(data))
+  n <- length(prices)
+  if (n < 252) next
+
+  last_price <- round(prices[n], 2)
+  prev_price <- prices[n - 1]
+  change_pct <- round(((last_price - prev_price) / prev_price) * 100, 2)
+  trend_pct <- calc_trend_strength(prices)
+  trend_label <- get_trend_label(trend_pct)
+  regime_score <- calc_regime_score(change_pct, trend_pct)
+  regime_label <- get_regime_label(regime_score)
+
+  # Multi-timeframe returns
+  ytd_idx <- which(index(data) >= as.Date(paste0(year(end_date), "-01-01")))[1]
+  ytd_return <- ifelse(!is.na(ytd_idx),
+                        round(((last_price - prices[ytd_idx]) / prices[ytd_idx]) * 100, 2), NA)
+  one_yr <- round(((last_price - prices[max(1, n - 252)]) / prices[max(1, n - 252)]) * 100, 2)
+  three_yr <- round(((last_price - prices[max(1, n - 756)]) / prices[max(1, n - 756)]) * 100, 2)
+  five_yr <- round(((last_price - prices[max(1, n - 1260)]) / prices[max(1, n - 1260)]) * 100, 2)
+  ten_yr <- round(((last_price - prices[1]) / prices[1]) * 100, 2)
+
+  # Volatility
+  log_returns <- diff(log(prices))
+  vol <- round(sd(tail(log_returns, 252)) * sqrt(252) * 100, 2)
+
+  results <- rbind(results, data.frame(
+    Symbol = sym, Sector = sector_etfs$Sector[i], Last = last_price,
+    Change_Pct = change_pct, Trend_Pct = trend_pct, Trend_Label = trend_label,
+    Regime_Score = regime_score, Regime_Label = regime_label,
+    YTD_Return = ytd_return, One_Year = one_yr, Three_Year = three_yr,
+    Five_Year = five_yr, Ten_Year = ten_yr, Volatility = vol,
+    stringsAsFactors = FALSE
+  ))
+}
+
+results <- results %>% arrange(desc(Change_Pct))
+```
+
+## Current Sector Performance {.tabset}
+
+### Daily View (Color-Coded)
+
+```{r daily-table}
+# Row color function
+get_row_color <- function(pct) {
+  if (pct > 2.0) return("#2d8f2d")
+  if (pct > 0.5) return("#4CAF50")
+  if (pct > 0) return("#6dbf6d")
+  if (pct > -0.5) return("#c8c832")
+  if (pct > -1.0) return("#d4a017")
+  if (pct > -2.0) return("#e67e22")
+  if (pct > -3.5) return("#d35400")
+  return("#c0392b")
+}
+
+daily_df <- results %>%
+  mutate(
+    `Change %` = sprintf("%+.2f%%", Change_Pct),
+    `Trend Strength %` = sprintf("%.2f%% %s", Trend_Pct, Trend_Label),
+    `Regime` = sprintf("%d %s", Regime_Score, Regime_Label)
+  ) %>%
+  select(Symbol, Sector, Last, `Change %`, `Trend Strength %`, Regime)
+
+daily_table <- daily_df %>%
+  gt() %>%
+  tab_header(title = md("**SPDR SECTOR FUNDs**"),
+             subtitle = sprintf("Daily Performance | %s", Sys.Date())) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#1a5c1a")),
+            locations = cells_title()) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#333333")),
+            locations = cells_column_labels()) %>%
+  tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+  tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+  cols_align(align = "center", columns = c(Symbol, `Change %`, `Trend Strength %`, Regime)) %>%
+  cols_align(align = "right", columns = Last)
+
+for (i in 1:nrow(results)) {
+  daily_table <- daily_table %>%
+    tab_style(style = cell_fill(color = get_row_color(results$Change_Pct[i])),
+              locations = cells_body(rows = i))
+}
+
+daily_table <- daily_table %>%
+  tab_options(table.background.color = "#1a1a2e", table.font.size = px(14))
+
+daily_table
+```
+
+### Long-Term Returns
+
+```{r long-term-table}
+lt_df <- results %>%
+  arrange(desc(Ten_Year)) %>%
+  mutate(
+    `YTD` = sprintf("%+.1f%%", YTD_Return),
+    `1 Year` = sprintf("%+.1f%%", One_Year),
+    `3 Year` = sprintf("%+.1f%%", Three_Year),
+    `5 Year` = sprintf("%+.1f%%", Five_Year),
+    `10 Year` = sprintf("%+.1f%%", Ten_Year),
+    `Vol (Ann.)` = sprintf("%.1f%%", Volatility)
+  ) %>%
+  select(Symbol, Sector, Last, YTD, `1 Year`, `3 Year`, `5 Year`, `10 Year`, `Vol (Ann.)`)
+
+lt_df %>%
+  gt() %>%
+  tab_header(title = md("**Long-Term Sector Returns**"),
+             subtitle = sprintf("Multi-timeframe returns as of %s", Sys.Date())) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#2c3e50")),
+            locations = cells_title()) %>%
+  tab_style(style = list(cell_text(color = "white"), cell_fill(color = "#34495e")),
+            locations = cells_column_labels()) %>%
+  tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+  tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+  cols_align(align = "center", columns = everything()) %>%
+  tab_options(table.background.color = "#1a1a2e", table.font.size = px(14))
+```
+
+## Sector Performance Chart (10 Years Normalized)
+
+```{r performance-chart, fig.width=12, fig.height=7}
+# Build normalized price series (base 100)
+chart_data <- data.frame()
+
+for (sym in names(all_data)) {
+  data <- all_data[[sym]]
+  if (is.null(data)) next
+  prices <- Cl(data)
+  normalized <- as.numeric(prices) / as.numeric(prices[1]) * 100
+  df <- data.frame(
+    Date = index(data),
+    Price = normalized,
+    Symbol = sym,
+    stringsAsFactors = FALSE
+  )
+  chart_data <- rbind(chart_data, df)
+}
+
+# Merge with sector names
+chart_data <- chart_data %>%
+  left_join(sector_etfs, by = "Symbol")
+
+ggplot(chart_data, aes(x = Date, y = Price, color = Symbol)) +
+  geom_line(linewidth = 0.8, alpha = 0.85) +
+  labs(
+    title = "SPDR Sector ETFs - 10 Year Normalized Performance (Base = 100)",
+    subtitle = sprintf("From %s to %s", start_date, end_date),
+    x = "", y = "Normalized Price (Base 100)",
+    color = "Sector ETF"
+  ) +
+  theme_dark() +
+  theme(
+    plot.background = element_rect(fill = "#1a1a2e"),
+    panel.background = element_rect(fill = "#16213e"),
+    legend.background = element_rect(fill = "#1a1a2e"),
+    legend.text = element_text(color = "white", size = 10),
+    legend.title = element_text(color = "white"),
+    axis.text = element_text(color = "white"),
+    axis.title = element_text(color = "white"),
+    plot.title = element_text(color = "#00ff88", size = 16, face = "bold"),
+    plot.subtitle = element_text(color = "#aaaaaa"),
+    panel.grid.major = element_line(color = "#2a2a4a"),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "gray50", alpha = 0.7)
+```
+
+## Sector Rotation Heatmap
+
+```{r heatmap, fig.width=10, fig.height=6}
+# Monthly returns heatmap for the last 12 months
+heatmap_data <- data.frame()
+
+for (sym in names(all_data)) {
+  data <- all_data[[sym]]
+  if (is.null(data)) next
+
+  # Get monthly returns for last 12 months
+  monthly <- to.monthly(data, indexAt = "lastof")
+  monthly_returns <- monthlyReturn(Cl(data))
+  last_12 <- tail(monthly_returns, 12)
+
+  df <- data.frame(
+    Month = format(index(last_12), "%Y-%m"),
+    Return = round(as.numeric(last_12) * 100, 2),
+    Symbol = sym,
+    stringsAsFactors = FALSE
+  )
+  heatmap_data <- rbind(heatmap_data, df)
+}
+
+heatmap_data <- heatmap_data %>%
+  left_join(sector_etfs, by = "Symbol")
+
+ggplot(heatmap_data, aes(x = Month, y = reorder(Symbol, Return), fill = Return)) +
+  geom_tile(color = "#1a1a2e", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%+.1f%%", Return)), color = "white", size = 3) +
+  scale_fill_gradient2(low = "#c0392b", mid = "#f39c12", high = "#27ae60",
+                       midpoint = 0, name = "Return %") +
+  labs(
+    title = "Monthly Sector Returns Heatmap (Last 12 Months)",
+    x = "", y = ""
+  ) +
+  theme_dark() +
+  theme(
+    plot.background = element_rect(fill = "#1a1a2e"),
+    panel.background = element_rect(fill = "#16213e"),
+    legend.background = element_rect(fill = "#1a1a2e"),
+    legend.text = element_text(color = "white"),
+    legend.title = element_text(color = "white"),
+    axis.text = element_text(color = "white"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(color = "#00ff88", size = 14, face = "bold"),
+    panel.grid = element_blank()
+  )
+```
+
+## Market Summary
+
+```{r summary}
+cat(sprintf("Leading: %d | Improving: %d | Weakening: %d | Lagging: %d\n",
+            sum(results$Regime_Score == 3), sum(results$Regime_Score == 2),
+            sum(results$Regime_Score == 1), sum(results$Regime_Score == 0)))
+cat(sprintf("Average Daily Change: %+.2f%%\n", mean(results$Change_Pct)))
+cat(sprintf("Best Performer: %s (%+.2f%%)\n", results$Symbol[1], results$Change_Pct[1]))
+cat(sprintf("Worst Performer: %s (%+.2f%%)\n",
+            results$Symbol[nrow(results)], results$Change_Pct[nrow(results)]))
+
+positive <- sum(results$Change_Pct > 0)
+negative <- nrow(results) - positive
+breadth <- ifelse(positive > negative, "BULLISH",
+                  ifelse(negative > positive, "BEARISH", "NEUTRAL"))
+cat(sprintf("Market Breadth: %d up / %d down -> %s\n", positive, negative, breadth))
+```
+
+---
+
+*Source: Yahoo Finance | SPDR State Street Global Advisors*
+*Generated: `r Sys.time()`*
