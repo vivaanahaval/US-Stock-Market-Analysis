@@ -6,7 +6,7 @@ date: "`r Sys.Date()`"
 output:
   html_document:
     theme: darkly
-    highlight: monokai
+    highlight: zenburn
     toc: true
     toc_float: true
     code_folding: hide
