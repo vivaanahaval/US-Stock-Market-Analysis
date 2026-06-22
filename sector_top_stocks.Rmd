@@ -13,21 +13,17 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
-```
-
-## Setup
-
-```{r libraries}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 library(quantmod)
 library(dplyr)
 library(gt)
 library(lubridate)
 library(ggplot2)
 library(tidyr)
+library(htmltools)
 ```
 
-```{r sector-holdings}
+```{r sector-holdings, include=FALSE}
 # Top holdings for each SPDR Sector ETF
 sector_holdings <- list(
   XLK = list(name = "Technology",
@@ -69,9 +65,7 @@ end_date <- Sys.Date()
 start_date <- end_date - years(1) - days(5)
 ```
 
-## Data Retrieval
-
-```{r fetch-data, cache=TRUE}
+```{r fetch-data, include=FALSE, cache=TRUE}
 # Fetch stock performance data
 fetch_stock_performance <- function(symbol, from_date, to_date) {
   tryCatch({
@@ -106,15 +100,12 @@ all_sector_results <- list()
 
 for (etf in names(sector_holdings)) {
   sector_info <- sector_holdings[[etf]]
-  cat(sprintf("Fetching %s (%s)...\n", etf, sector_info$name))
-  
   sector_results <- data.frame()
   for (stock in sector_info$stocks) {
     result <- fetch_stock_performance(stock, start_date, end_date)
     if (!is.null(result)) sector_results <- rbind(sector_results, result)
     Sys.sleep(0.2)
   }
-  
   if (nrow(sector_results) > 0) {
     all_sector_results[[etf]] <- sector_results %>%
       arrange(desc(Return_12M)) %>%
@@ -122,23 +113,23 @@ for (etf in names(sector_holdings)) {
       mutate(Rank = row_number())
   }
 }
+
+# Combine all results
+all_combined <- bind_rows(
+  lapply(names(all_sector_results), function(etf) {
+    all_sector_results[[etf]] %>%
+      mutate(Sector_ETF = etf, Sector_Name = sector_holdings[[etf]]$name)
+  })
+)
 ```
 
-## Sector Performance {.tabset .tabset-pills}
-
-```{r generate-tables, results='asis'}
-# Generate a tab for each sector
-for (etf in names(all_sector_results)) {
-  sector_name <- sector_holdings[[etf]]$name
-  results <- all_sector_results[[etf]]
-  
-  cat(sprintf("\n\n### %s (%s)\n\n", sector_name, etf))
-  
-  # Create GT table
+```{r helper-function, include=FALSE}
+# Helper function to create a styled GT table for a sector
+make_sector_table <- function(etf, results, sector_name) {
   display_df <- results %>%
     select(Rank, Symbol, Last_Price, Return_12M, Return_6M, Return_3M, Return_1M, Pct_From_High) %>%
     rename(`#` = Rank, Price = Last_Price, `12M %` = Return_12M, `6M %` = Return_6M,
-           `3M %` = Return_3M, `1M %` = Return_1M, `From Hi` = Pct_From_High)
+           `3M %` = Return_3M, `1M %` = Return_1M, `From 52W Hi` = Pct_From_High)
   
   tbl <- display_df %>%
     gt() %>%
@@ -147,12 +138,12 @@ for (etf in names(all_sector_results)) {
       subtitle = md(sprintf("*%s to %s*", end_date - years(1), end_date))
     ) %>%
     fmt_number(columns = Price, decimals = 2) %>%
-    fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`, `From Hi`), 
+    fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`, `From 52W Hi`),
                decimals = 1, force_sign = TRUE) %>%
-    tab_style(style = list(cell_text(color = "white", weight = "bold"), 
+    tab_style(style = list(cell_text(color = "white", weight = "bold"),
                             cell_fill(color = "#1a5c1a")),
               locations = cells_title()) %>%
-    tab_style(style = list(cell_text(color = "white", weight = "bold"), 
+    tab_style(style = list(cell_text(color = "white", weight = "bold"),
                             cell_fill(color = "#333333")),
               locations = cells_column_labels()) %>%
     tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
@@ -169,24 +160,79 @@ for (etf in names(all_sector_results)) {
   }
   
   tbl <- tbl %>% tab_options(table.background.color = "#1a1a2e", table.font.size = px(13))
-  
-  print(htmltools::tagList(tbl))
-  cat("\n\n")
+  return(tbl)
 }
 ```
 
-## Overall Top 20 Performers {.tabset}
+## Technology (XLK) {.unlisted}
 
-### Best Performers
+```{r xlk-table, echo=FALSE}
+make_sector_table("XLK", all_sector_results[["XLK"]], "Technology")
+```
 
-```{r top-20}
-all_combined <- bind_rows(
-  lapply(names(all_sector_results), function(etf) {
-    all_sector_results[[etf]] %>%
-      mutate(Sector_ETF = etf, Sector_Name = sector_holdings[[etf]]$name)
-  })
-)
+## Industrial (XLI) {.unlisted}
 
+```{r xli-table, echo=FALSE}
+make_sector_table("XLI", all_sector_results[["XLI"]], "Industrial")
+```
+
+## Utilities (XLU) {.unlisted}
+
+```{r xlu-table, echo=FALSE}
+make_sector_table("XLU", all_sector_results[["XLU"]], "Utilities")
+```
+
+## Consumer Discretionary (XLY) {.unlisted}
+
+```{r xly-table, echo=FALSE}
+make_sector_table("XLY", all_sector_results[["XLY"]], "Consumer Discretionary")
+```
+
+## Financial (XLF) {.unlisted}
+
+```{r xlf-table, echo=FALSE}
+make_sector_table("XLF", all_sector_results[["XLF"]], "Financial")
+```
+
+## Materials (XLB) {.unlisted}
+
+```{r xlb-table, echo=FALSE}
+make_sector_table("XLB", all_sector_results[["XLB"]], "Materials")
+```
+
+## Communication (XLC) {.unlisted}
+
+```{r xlc-table, echo=FALSE}
+make_sector_table("XLC", all_sector_results[["XLC"]], "Communication")
+```
+
+## Health Care (XLV) {.unlisted}
+
+```{r xlv-table, echo=FALSE}
+make_sector_table("XLV", all_sector_results[["XLV"]], "Health Care")
+```
+
+## Consumer Staples (XLP) {.unlisted}
+
+```{r xlp-table, echo=FALSE}
+make_sector_table("XLP", all_sector_results[["XLP"]], "Consumer Staples")
+```
+
+## Real Estate (XLRE) {.unlisted}
+
+```{r xlre-table, echo=FALSE}
+make_sector_table("XLRE", all_sector_results[["XLRE"]], "Real Estate")
+```
+
+## Energy (XLE) {.unlisted}
+
+```{r xle-table, echo=FALSE}
+make_sector_table("XLE", all_sector_results[["XLE"]], "Energy")
+```
+
+## Overall Top 20 Performers
+
+```{r top-20, echo=FALSE}
 top_20 <- all_combined %>%
   arrange(desc(Return_12M)) %>%
   head(20) %>%
@@ -198,7 +244,7 @@ top_20 <- all_combined %>%
 top_20 %>%
   gt() %>%
   tab_header(title = md("**Top 20 Performers Across All Sectors**"),
-             subtitle = md("*12-Month Return*")) %>%
+             subtitle = md(sprintf("*Ranked by 12-Month Return | %s to %s*", end_date - years(1), end_date))) %>%
   fmt_number(columns = Price, decimals = 2) %>%
   fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`), decimals = 1, force_sign = TRUE) %>%
   tab_style(style = list(cell_text(color = "white", weight = "bold"), cell_fill(color = "#1a5c1a")),
@@ -212,9 +258,9 @@ top_20 %>%
   tab_options(table.background.color = "#1a1a2e", table.font.size = px(13))
 ```
 
-### Worst Performers
+## Bottom 10 Performers
 
-```{r bottom-10}
+```{r bottom-10, echo=FALSE}
 bottom_10 <- all_combined %>%
   arrange(Return_12M) %>%
   head(10) %>%
@@ -226,7 +272,7 @@ bottom_10 <- all_combined %>%
 bottom_10 %>%
   gt() %>%
   tab_header(title = md("**Bottom 10 Performers Across All Sectors**"),
-             subtitle = md("*12-Month Return*")) %>%
+             subtitle = md(sprintf("*Ranked by 12-Month Return | %s to %s*", end_date - years(1), end_date))) %>%
   fmt_number(columns = Price, decimals = 2) %>%
   fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`), decimals = 1, force_sign = TRUE) %>%
   tab_style(style = list(cell_text(color = "white", weight = "bold"), cell_fill(color = "#8b0000")),
@@ -242,8 +288,7 @@ bottom_10 %>%
 
 ## Sector Comparison Chart
 
-```{r comparison-chart, fig.width=14, fig.height=8}
-# Average 12M return per sector
+```{r comparison-chart, echo=FALSE, fig.width=14, fig.height=8}
 sector_avg <- all_combined %>%
   group_by(Sector_ETF, Sector_Name) %>%
   summarize(
@@ -256,11 +301,10 @@ sector_avg <- all_combined %>%
   ) %>%
   arrange(desc(Avg_12M))
 
-ggplot(sector_avg, aes(x = reorder(Sector_Name, Avg_12M), y = Avg_12M, 
-                        fill = Avg_12M)) +
+ggplot(sector_avg, aes(x = reorder(Sector_Name, Avg_12M), y = Avg_12M, fill = Avg_12M)) +
   geom_col(width = 0.7) +
-  geom_text(aes(label = sprintf("%+.1f%%", Avg_12M)), 
-            hjust = ifelse(sector_avg$Avg_12M > 0, -0.1, 1.1), 
+  geom_text(aes(label = sprintf("%+.1f%%", Avg_12M)),
+            hjust = ifelse(sector_avg$Avg_12M > 0, -0.1, 1.1),
             color = "white", size = 4) +
   coord_flip() +
   scale_fill_gradient2(low = "#c0392b", mid = "#f39c12", high = "#27ae60", midpoint = 0) +
@@ -282,10 +326,9 @@ ggplot(sector_avg, aes(x = reorder(Sector_Name, Avg_12M), y = Avg_12M,
   )
 ```
 
-## Scatter: Return vs Risk
+## Scatter: 12-Month Return vs 3-Month Momentum
 
-```{r scatter-plot, fig.width=12, fig.height=7}
-# Plot each stock's 12M return vs 1M return (momentum)
+```{r scatter-plot, echo=FALSE, fig.width=12, fig.height=7}
 scatter_df <- all_combined %>%
   select(Symbol, Sector_Name, Return_12M, Return_1M, Return_3M)
 
@@ -295,6 +338,7 @@ ggplot(scatter_df, aes(x = Return_3M, y = Return_12M, color = Sector_Name)) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
   geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
   labs(title = "Sector Stocks: 12-Month Return vs 3-Month Momentum",
+       subtitle = "Top-right quadrant = Strong long-term AND recent momentum",
        x = "3-Month Return (%)", y = "12-Month Return (%)", color = "Sector") +
   theme_dark() +
   theme(
@@ -306,6 +350,7 @@ ggplot(scatter_df, aes(x = Return_3M, y = Return_12M, color = Sector_Name)) +
     axis.text = element_text(color = "white"),
     axis.title = element_text(color = "white"),
     plot.title = element_text(color = "#00ff88", size = 14, face = "bold"),
+    plot.subtitle = element_text(color = "#aaaaaa"),
     panel.grid.major = element_line(color = "#2a2a4a"),
     panel.grid.minor = element_blank()
   )
@@ -313,4 +358,5 @@ ggplot(scatter_df, aes(x = Return_3M, y = Return_12M, color = Sector_Name)) +
 
 ---
 
-*Source: Yahoo Finance | Generated: `r Sys.time()`*
+*Source: Yahoo Finance | SPDR State Street Global Advisors*
+*Generated: `r Sys.time()`*
