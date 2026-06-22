@@ -1,0 +1,316 @@
+---
+title: "Top 10 Stocks Per Sector - 12 Month Performance"
+subtitle: "SPDR Sector ETF Contributors Analysis"
+author: "Generated via R & Yahoo Finance"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: darkly
+    highlight: zenburn
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+```
+
+## Setup
+
+```{r libraries}
+library(quantmod)
+library(dplyr)
+library(gt)
+library(lubridate)
+library(ggplot2)
+library(tidyr)
+```
+
+```{r sector-holdings}
+# Top holdings for each SPDR Sector ETF
+sector_holdings <- list(
+  XLK = list(name = "Technology",
+    stocks = c("AAPL", "MSFT", "NVDA", "AVGO", "CRM", "ORCL", "AMD", "ADBE", "ACN", "CSCO",
+               "INTU", "IBM", "TXN", "QCOM", "NOW")),
+  XLI = list(name = "Industrial",
+    stocks = c("GE", "CAT", "RTX", "UNP", "HON", "DE", "ETN", "ADP", "LMT", "BA",
+               "UPS", "GD", "MMM", "ITW", "WM")),
+  XLU = list(name = "Utilities",
+    stocks = c("NEE", "SO", "DUK", "CEG", "SRE", "AEP", "D", "PCG", "EXC", "XEL",
+               "PEG", "ED", "WEC", "AWK", "ES")),
+  XLY = list(name = "Consumer Discretionary",
+    stocks = c("AMZN", "TSLA", "MCD", "HD", "NKE", "LOW", "BKNG", "SBUX", "TJX", "ABNB",
+               "MAR", "GM", "F", "ORLY", "CMG")),
+  XLF = list(name = "Financial",
+    stocks = c("BRK-B", "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "SPGI", "AXP",
+               "BLK", "C", "SCHW", "CB", "PGR")),
+  XLB = list(name = "Materials",
+    stocks = c("LIN", "SHW", "APD", "FCX", "ECL", "NEM", "NUE", "VMC", "MLM", "DOW",
+               "DD", "PPG", "CTVA", "CE", "IFF")),
+  XLC = list(name = "Communication",
+    stocks = c("META", "GOOGL", "GOOG", "NFLX", "DIS", "CMCSA", "T", "VZ", "TMUS", "EA",
+               "CHTR", "WBD", "OMC", "TTWO", "LYV")),
+  XLV = list(name = "Health Care",
+    stocks = c("LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "PFE", "AMGN", "DHR",
+               "ISRG", "BMY", "MDT", "SYK", "GILD")),
+  XLP = list(name = "Consumer Staples",
+    stocks = c("PG", "COST", "WMT", "KO", "PEP", "PM", "MDLZ", "MO", "CL", "GIS",
+               "KMB", "STZ", "SYY", "KHC", "HSY")),
+  XLRE = list(name = "Real Estate",
+    stocks = c("PLD", "AMT", "EQIX", "SPG", "PSA", "O", "WELL", "DLR", "CCI", "VICI",
+               "AVB", "EQR", "SBAC", "WY", "ARE")),
+  XLE = list(name = "Energy",
+    stocks = c("XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PXD", "PSX", "VLO", "OXY",
+               "WMB", "HAL", "DVN", "KMI", "HES"))
+)
+
+end_date <- Sys.Date()
+start_date <- end_date - years(1) - days(5)
+```
+
+## Data Retrieval
+
+```{r fetch-data, cache=TRUE}
+# Fetch stock performance data
+fetch_stock_performance <- function(symbol, from_date, to_date) {
+  tryCatch({
+    data <- getSymbols(symbol, src = "yahoo", from = from_date, to = to_date, auto.assign = FALSE)
+    if (is.null(data) || nrow(data) < 20) return(NULL)
+    prices <- Cl(data)
+    n <- nrow(data)
+    current_price <- round(as.numeric(tail(prices, 1)), 2)
+    start_price <- as.numeric(prices[1])
+    
+    data.frame(
+      Symbol = symbol,
+      Last_Price = current_price,
+      Return_12M = round(((current_price - start_price) / start_price) * 100, 2),
+      Return_6M = round(((current_price - as.numeric(prices[max(1, n-126)])) / 
+                          as.numeric(prices[max(1, n-126)])) * 100, 2),
+      Return_3M = round(((current_price - as.numeric(prices[max(1, n-63)])) / 
+                          as.numeric(prices[max(1, n-63)])) * 100, 2),
+      Return_1M = round(((current_price - as.numeric(prices[max(1, n-21)])) / 
+                          as.numeric(prices[max(1, n-21)])) * 100, 2),
+      High_52W = round(max(as.numeric(Hi(data)), na.rm = TRUE), 2),
+      Low_52W = round(min(as.numeric(Lo(data)), na.rm = TRUE), 2),
+      Pct_From_High = round(((current_price - max(as.numeric(Hi(data)), na.rm = TRUE)) / 
+                              max(as.numeric(Hi(data)), na.rm = TRUE)) * 100, 2),
+      stringsAsFactors = FALSE
+    )
+  }, error = function(e) NULL)
+}
+
+# Fetch all stocks
+all_sector_results <- list()
+
+for (etf in names(sector_holdings)) {
+  sector_info <- sector_holdings[[etf]]
+  cat(sprintf("Fetching %s (%s)...\n", etf, sector_info$name))
+  
+  sector_results <- data.frame()
+  for (stock in sector_info$stocks) {
+    result <- fetch_stock_performance(stock, start_date, end_date)
+    if (!is.null(result)) sector_results <- rbind(sector_results, result)
+    Sys.sleep(0.2)
+  }
+  
+  if (nrow(sector_results) > 0) {
+    all_sector_results[[etf]] <- sector_results %>%
+      arrange(desc(Return_12M)) %>%
+      head(10) %>%
+      mutate(Rank = row_number())
+  }
+}
+```
+
+## Sector Performance {.tabset .tabset-pills}
+
+```{r generate-tables, results='asis'}
+# Generate a tab for each sector
+for (etf in names(all_sector_results)) {
+  sector_name <- sector_holdings[[etf]]$name
+  results <- all_sector_results[[etf]]
+  
+  cat(sprintf("\n\n### %s (%s)\n\n", sector_name, etf))
+  
+  # Create GT table
+  display_df <- results %>%
+    select(Rank, Symbol, Last_Price, Return_12M, Return_6M, Return_3M, Return_1M, Pct_From_High) %>%
+    rename(`#` = Rank, Price = Last_Price, `12M %` = Return_12M, `6M %` = Return_6M,
+           `3M %` = Return_3M, `1M %` = Return_1M, `From Hi` = Pct_From_High)
+  
+  tbl <- display_df %>%
+    gt() %>%
+    tab_header(
+      title = md(sprintf("**%s (%s) - Top 10 Stocks by 12-Month Return**", etf, sector_name)),
+      subtitle = md(sprintf("*%s to %s*", end_date - years(1), end_date))
+    ) %>%
+    fmt_number(columns = Price, decimals = 2) %>%
+    fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`, `From Hi`), 
+               decimals = 1, force_sign = TRUE) %>%
+    tab_style(style = list(cell_text(color = "white", weight = "bold"), 
+                            cell_fill(color = "#1a5c1a")),
+              locations = cells_title()) %>%
+    tab_style(style = list(cell_text(color = "white", weight = "bold"), 
+                            cell_fill(color = "#333333")),
+              locations = cells_column_labels()) %>%
+    tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+    tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+    cols_align(align = "center", columns = everything())
+  
+  # Color rows by 12M return
+  for (i in 1:nrow(results)) {
+    ret <- results$Return_12M[i]
+    bg <- if (ret > 50) "#1a8c1a" else if (ret > 30) "#2d8f2d" else if (ret > 15) "#4CAF50"
+          else if (ret > 5) "#6dbf6d" else if (ret > 0) "#8fbc8f"
+          else if (ret > -10) "#d4a017" else if (ret > -20) "#e67e22" else "#c0392b"
+    tbl <- tbl %>% tab_style(style = cell_fill(color = bg), locations = cells_body(rows = i))
+  }
+  
+  tbl <- tbl %>% tab_options(table.background.color = "#1a1a2e", table.font.size = px(13))
+  
+  print(htmltools::tagList(tbl))
+  cat("\n\n")
+}
+```
+
+## Overall Top 20 Performers {.tabset}
+
+### Best Performers
+
+```{r top-20}
+all_combined <- bind_rows(
+  lapply(names(all_sector_results), function(etf) {
+    all_sector_results[[etf]] %>%
+      mutate(Sector_ETF = etf, Sector_Name = sector_holdings[[etf]]$name)
+  })
+)
+
+top_20 <- all_combined %>%
+  arrange(desc(Return_12M)) %>%
+  head(20) %>%
+  mutate(Rank = row_number()) %>%
+  select(Rank, Symbol, Sector_Name, Last_Price, Return_12M, Return_6M, Return_3M, Return_1M) %>%
+  rename(`#` = Rank, Sector = Sector_Name, Price = Last_Price,
+         `12M %` = Return_12M, `6M %` = Return_6M, `3M %` = Return_3M, `1M %` = Return_1M)
+
+top_20 %>%
+  gt() %>%
+  tab_header(title = md("**Top 20 Performers Across All Sectors**"),
+             subtitle = md("*12-Month Return*")) %>%
+  fmt_number(columns = Price, decimals = 2) %>%
+  fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`), decimals = 1, force_sign = TRUE) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"), cell_fill(color = "#1a5c1a")),
+            locations = cells_title()) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"), cell_fill(color = "#333333")),
+            locations = cells_column_labels()) %>%
+  tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+  tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+  cols_align(align = "center", columns = everything()) %>%
+  data_color(columns = `12M %`, palette = c("#c0392b", "#f39c12", "#27ae60"), domain = NULL) %>%
+  tab_options(table.background.color = "#1a1a2e", table.font.size = px(13))
+```
+
+### Worst Performers
+
+```{r bottom-10}
+bottom_10 <- all_combined %>%
+  arrange(Return_12M) %>%
+  head(10) %>%
+  mutate(Rank = row_number()) %>%
+  select(Rank, Symbol, Sector_Name, Last_Price, Return_12M, Return_6M, Return_3M, Return_1M) %>%
+  rename(`#` = Rank, Sector = Sector_Name, Price = Last_Price,
+         `12M %` = Return_12M, `6M %` = Return_6M, `3M %` = Return_3M, `1M %` = Return_1M)
+
+bottom_10 %>%
+  gt() %>%
+  tab_header(title = md("**Bottom 10 Performers Across All Sectors**"),
+             subtitle = md("*12-Month Return*")) %>%
+  fmt_number(columns = Price, decimals = 2) %>%
+  fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`), decimals = 1, force_sign = TRUE) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"), cell_fill(color = "#8b0000")),
+            locations = cells_title()) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"), cell_fill(color = "#333333")),
+            locations = cells_column_labels()) %>%
+  tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+  tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+  cols_align(align = "center", columns = everything()) %>%
+  data_color(columns = `12M %`, palette = c("#c0392b", "#f39c12", "#27ae60"), domain = NULL) %>%
+  tab_options(table.background.color = "#1a1a2e", table.font.size = px(13))
+```
+
+## Sector Comparison Chart
+
+```{r comparison-chart, fig.width=14, fig.height=8}
+# Average 12M return per sector
+sector_avg <- all_combined %>%
+  group_by(Sector_ETF, Sector_Name) %>%
+  summarize(
+    Avg_12M = mean(Return_12M, na.rm = TRUE),
+    Best_Stock = Symbol[which.max(Return_12M)],
+    Best_Return = max(Return_12M, na.rm = TRUE),
+    Worst_Stock = Symbol[which.min(Return_12M)],
+    Worst_Return = min(Return_12M, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Avg_12M))
+
+ggplot(sector_avg, aes(x = reorder(Sector_Name, Avg_12M), y = Avg_12M, 
+                        fill = Avg_12M)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%+.1f%%", Avg_12M)), 
+            hjust = ifelse(sector_avg$Avg_12M > 0, -0.1, 1.1), 
+            color = "white", size = 4) +
+  coord_flip() +
+  scale_fill_gradient2(low = "#c0392b", mid = "#f39c12", high = "#27ae60", midpoint = 0) +
+  labs(title = "Average 12-Month Return by Sector (Top 10 Stocks)",
+       subtitle = sprintf("%s to %s", end_date - years(1), end_date),
+       x = "", y = "Average 12-Month Return (%)") +
+  theme_dark() +
+  theme(
+    plot.background = element_rect(fill = "#1a1a2e"),
+    panel.background = element_rect(fill = "#16213e"),
+    legend.position = "none",
+    axis.text = element_text(color = "white", size = 11),
+    axis.title = element_text(color = "white"),
+    plot.title = element_text(color = "#00ff88", size = 16, face = "bold"),
+    plot.subtitle = element_text(color = "#aaaaaa"),
+    panel.grid.major.x = element_line(color = "#2a2a4a"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+```
+
+## Scatter: Return vs Risk
+
+```{r scatter-plot, fig.width=12, fig.height=7}
+# Plot each stock's 12M return vs 1M return (momentum)
+scatter_df <- all_combined %>%
+  select(Symbol, Sector_Name, Return_12M, Return_1M, Return_3M)
+
+ggplot(scatter_df, aes(x = Return_3M, y = Return_12M, color = Sector_Name)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_text(aes(label = Symbol), size = 2.5, vjust = -0.8, color = "white", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(title = "Sector Stocks: 12-Month Return vs 3-Month Momentum",
+       x = "3-Month Return (%)", y = "12-Month Return (%)", color = "Sector") +
+  theme_dark() +
+  theme(
+    plot.background = element_rect(fill = "#1a1a2e"),
+    panel.background = element_rect(fill = "#16213e"),
+    legend.background = element_rect(fill = "#1a1a2e"),
+    legend.text = element_text(color = "white", size = 9),
+    legend.title = element_text(color = "white"),
+    axis.text = element_text(color = "white"),
+    axis.title = element_text(color = "white"),
+    plot.title = element_text(color = "#00ff88", size = 14, face = "bold"),
+    panel.grid.major = element_line(color = "#2a2a4a"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+---
+
+*Source: Yahoo Finance | Generated: `r Sys.time()`*
