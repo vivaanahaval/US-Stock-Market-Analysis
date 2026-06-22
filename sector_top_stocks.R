@@ -92,8 +92,8 @@ sector_holdings <- list(
 
   XLE = list(
     name = "Energy",
-    stocks = c("XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PXD", "PSX", "VLO", "OXY",
-               "WMB", "HAL", "DVN", "KMI", "HES")
+    stocks = c("XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "VLO", "OXY",
+               "WMB", "HAL", "DVN", "KMI", "FANG", "TPL")
   )
 )
 

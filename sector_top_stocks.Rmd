@@ -61,8 +61,8 @@ sector_holdings <- list(
     stocks = c("PLD", "AMT", "EQIX", "SPG", "PSA", "O", "WELL", "DLR", "CCI", "VICI",
                "AVB", "EQR", "SBAC", "WY", "ARE")),
   XLE = list(name = "Energy",
-    stocks = c("XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PXD", "PSX", "VLO", "OXY",
-               "WMB", "HAL", "DVN", "KMI", "HES"))
+    stocks = c("XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "VLO", "OXY",
+               "WMB", "HAL", "DVN", "KMI", "FANG", "TPL"))
 )
 
 end_date <- Sys.Date()
