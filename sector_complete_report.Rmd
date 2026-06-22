@@ -1,0 +1,646 @@
+---
+title: "US Stock Market - Complete Sector Analysis"
+subtitle: "SPDR Sector ETF Performance + Top Stock Contributors"
+author: "Generated via R & Yahoo Finance"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: darkly
+    highlight: zenburn
+    toc: true
+    toc_float:
+      collapsed: false
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(quantmod)
+library(dplyr)
+library(gt)
+library(TTR)
+library(lubridate)
+library(ggplot2)
+library(tidyr)
+library(htmltools)
+```
+
+
+```{r config, include=FALSE}
+# SPDR Sector ETFs
+sector_etfs <- data.frame(
+  Symbol = c("XLK", "XLI", "XLU", "XLY", "XLF", "XLB", "XLC", "XLV", "XLP", "XLRE", "XLE"),
+  Sector = c("Technology", "Industrial", "Utilities", "Consumer Discretionary",
+             "Financial", "Materials", "Communication", "Health Care",
+             "Consumer Staples", "Real Estate", "Energy"),
+  stringsAsFactors = FALSE
+)
+
+# Top holdings for each SPDR Sector ETF
+sector_holdings <- list(
+  XLK = list(name = "Technology",
+    stocks = c("AAPL", "MSFT", "NVDA", "AVGO", "CRM", "ORCL", "AMD", "ADBE", "ACN", "CSCO",
+               "INTU", "IBM", "TXN", "QCOM", "NOW")),
+  XLI = list(name = "Industrial",
+    stocks = c("GE", "CAT", "RTX", "UNP", "HON", "DE", "ETN", "ADP", "LMT", "BA",
+               "UPS", "GD", "MMM", "ITW", "WM")),
+  XLU = list(name = "Utilities",
+    stocks = c("NEE", "SO", "DUK", "CEG", "SRE", "AEP", "D", "PCG", "EXC", "XEL",
+               "PEG", "ED", "WEC", "AWK", "ES")),
+  XLY = list(name = "Consumer Discretionary",
+    stocks = c("AMZN", "TSLA", "MCD", "HD", "NKE", "LOW", "BKNG", "SBUX", "TJX", "ABNB",
+               "MAR", "GM", "F", "ORLY", "CMG")),
+  XLF = list(name = "Financial",
+    stocks = c("BRK-B", "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "SPGI", "AXP",
+               "BLK", "C", "SCHW", "CB", "PGR")),
+  XLB = list(name = "Materials",
+    stocks = c("LIN", "SHW", "APD", "FCX", "ECL", "NEM", "NUE", "VMC", "MLM", "DOW",
+               "DD", "PPG", "CTVA", "CE", "IFF")),
+  XLC = list(name = "Communication",
+    stocks = c("META", "GOOGL", "GOOG", "NFLX", "DIS", "CMCSA", "T", "VZ", "TMUS", "EA",
+               "CHTR", "WBD", "OMC", "TTWO", "LYV")),
+  XLV = list(name = "Health Care",
+    stocks = c("LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "PFE", "AMGN", "DHR",
+               "ISRG", "BMY", "MDT", "SYK", "GILD")),
+  XLP = list(name = "Consumer Staples",
+    stocks = c("PG", "COST", "WMT", "KO", "PEP", "PM", "MDLZ", "MO", "CL", "GIS",
+               "KMB", "STZ", "SYY", "KHC", "HSY")),
+  XLRE = list(name = "Real Estate",
+    stocks = c("PLD", "AMT", "EQIX", "SPG", "PSA", "O", "WELL", "DLR", "CCI", "VICI",
+               "AVB", "EQR", "SBAC", "WY", "ARE")),
+  XLE = list(name = "Energy",
+    stocks = c("XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "VLO", "OXY",
+               "WMB", "HAL", "DVN", "KMI", "FANG", "TPL"))
+)
+
+end_date <- Sys.Date()
+start_date_10y <- end_date - years(10)
+start_date_1y <- end_date - years(1) - days(5)
+```
+
+
+```{r helper-functions, include=FALSE}
+# Trend Strength: 20-day MA momentum
+calc_trend_strength <- function(prices, period = 20) {
+  if (length(prices) < period + 1) return(0)
+  ma <- SMA(prices, n = period)
+  ma_clean <- na.omit(ma)
+  n <- length(ma_clean)
+  if (n <= period) return(0)
+  current_ma <- ma_clean[n]
+  past_ma <- ma_clean[n - period]
+  if (is.na(current_ma) || is.na(past_ma) || past_ma == 0) return(0)
+  return(round(((current_ma - past_ma) / past_ma) * 100, 2))
+}
+
+get_trend_label <- function(trend_pct) {
+  strength <- ifelse(abs(trend_pct) > 2.0, "Strong ", "")
+  if (trend_pct > 0.5) return(paste0(strength, "Bullish"))
+  if (trend_pct < -0.5) return(paste0(strength, "Bearish"))
+  return("Neutral")
+}
+
+calc_regime_score <- function(change_pct, trend_pct) {
+  score <- 0
+  if (change_pct > 1.0) score <- score + 1
+  if (change_pct < -1.0) score <- score - 1
+  if (trend_pct > 1.0) score <- score + 1
+  if (trend_pct < -1.0) score <- score - 1
+  if (abs(trend_pct) > 2.5) {
+    if (trend_pct > 0) score <- score + 1 else score <- score - 1
+  }
+  return(max(0, min(3, score + 1)))
+}
+
+get_regime_label <- function(score) {
+  c("Lagging", "Weakening", "Improving", "Leading")[score + 1]
+}
+
+get_row_color <- function(pct) {
+  if (pct > 2.0) return("#2d8f2d")
+  if (pct > 0.5) return("#4CAF50")
+  if (pct > 0) return("#6dbf6d")
+  if (pct > -0.5) return("#c8c832")
+  if (pct > -1.0) return("#d4a017")
+  if (pct > -2.0) return("#e67e22")
+  if (pct > -3.5) return("#d35400")
+  return("#c0392b")
+}
+
+get_stock_row_color <- function(ret) {
+  if (ret > 50) return("#1a8c1a")
+  if (ret > 30) return("#2d8f2d")
+  if (ret > 15) return("#4CAF50")
+  if (ret > 5) return("#6dbf6d")
+  if (ret > 0) return("#8fbc8f")
+  if (ret > -10) return("#d4a017")
+  if (ret > -20) return("#e67e22")
+  return("#c0392b")
+}
+
+# Sector table helper
+make_sector_stock_table <- function(etf, results, sector_name) {
+  display_df <- results %>%
+    select(Rank, Symbol, Last_Price, Return_12M, Return_6M, Return_3M, Return_1M, Pct_From_High) %>%
+    rename(`#` = Rank, Price = Last_Price, `12M %` = Return_12M, `6M %` = Return_6M,
+           `3M %` = Return_3M, `1M %` = Return_1M, `From 52W Hi` = Pct_From_High)
+  
+  tbl <- display_df %>%
+    gt() %>%
+    tab_header(
+      title = md(sprintf("**%s (%s) - Top 10 Stocks by 12-Month Return**", etf, sector_name)),
+      subtitle = md(sprintf("*%s to %s*", end_date - years(1), end_date))
+    ) %>%
+    fmt_number(columns = Price, decimals = 2) %>%
+    fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`, `From 52W Hi`),
+               decimals = 1, force_sign = TRUE) %>%
+    tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                            cell_fill(color = "#1a5c1a")),
+              locations = cells_title()) %>%
+    tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                            cell_fill(color = "#333333")),
+              locations = cells_column_labels()) %>%
+    tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+    tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+    cols_align(align = "center", columns = everything())
+  
+  for (i in 1:nrow(results)) {
+    bg <- get_stock_row_color(results$Return_12M[i])
+    tbl <- tbl %>% tab_style(style = cell_fill(color = bg), locations = cells_body(rows = i))
+  }
+  
+  tbl <- tbl %>% tab_options(table.background.color = "#1a1a2e", table.font.size = px(13))
+  return(tbl)
+}
+```
+
+
+```{r fetch-sector-etf-data, include=FALSE, cache=TRUE}
+# ============================================================
+# PART 1: Fetch Sector ETF data (10 years)
+# ============================================================
+etf_data <- list()
+for (sym in sector_etfs$Symbol) {
+  tryCatch({
+    etf_data[[sym]] <- getSymbols(sym, src = "yahoo", from = start_date_10y, to = end_date, auto.assign = FALSE)
+  }, error = function(e) { })
+}
+
+# Calculate sector ETF metrics
+sector_results <- data.frame()
+
+for (i in 1:nrow(sector_etfs)) {
+  sym <- sector_etfs$Symbol[i]
+  data <- etf_data[[sym]]
+  if (is.null(data)) next
+  
+  prices <- as.numeric(Cl(data))
+  n <- length(prices)
+  if (n < 252) next
+  
+  last_price <- round(prices[n], 2)
+  prev_price <- prices[n - 1]
+  change_pct <- round(((last_price - prev_price) / prev_price) * 100, 2)
+  trend_pct <- calc_trend_strength(prices)
+  trend_label <- get_trend_label(trend_pct)
+  regime_score <- calc_regime_score(change_pct, trend_pct)
+  regime_label <- get_regime_label(regime_score)
+  
+  # Multi-timeframe returns
+  ytd_idx <- which(index(data) >= as.Date(paste0(year(end_date), "-01-01")))[1]
+  ytd_return <- ifelse(!is.na(ytd_idx),
+                        round(((last_price - prices[ytd_idx]) / prices[ytd_idx]) * 100, 2), NA)
+  one_yr <- round(((last_price - prices[max(1, n-252)]) / prices[max(1, n-252)]) * 100, 2)
+  three_yr <- round(((last_price - prices[max(1, n-756)]) / prices[max(1, n-756)]) * 100, 2)
+  five_yr <- round(((last_price - prices[max(1, n-1260)]) / prices[max(1, n-1260)]) * 100, 2)
+  ten_yr <- round(((last_price - prices[1]) / prices[1]) * 100, 2)
+  
+  log_returns <- diff(log(prices))
+  vol <- round(sd(tail(log_returns, 252)) * sqrt(252) * 100, 2)
+  
+  sector_results <- rbind(sector_results, data.frame(
+    Symbol = sym, Sector = sector_etfs$Sector[i], Last = last_price,
+    Change_Pct = change_pct, Trend_Pct = trend_pct, Trend_Label = trend_label,
+    Regime_Score = regime_score, Regime_Label = regime_label,
+    YTD_Return = ytd_return, One_Year = one_yr, Three_Year = three_yr,
+    Five_Year = five_yr, Ten_Year = ten_yr, Volatility = vol,
+    stringsAsFactors = FALSE
+  ))
+}
+
+sector_results <- sector_results %>% arrange(desc(Change_Pct))
+```
+
+
+```{r fetch-stock-data, include=FALSE, cache=TRUE}
+# ============================================================
+# PART 2: Fetch individual stock data (12 months)
+# ============================================================
+fetch_stock_performance <- function(symbol, from_date, to_date) {
+  tryCatch({
+    data <- getSymbols(symbol, src = "yahoo", from = from_date, to = to_date, auto.assign = FALSE)
+    if (is.null(data) || nrow(data) < 20) return(NULL)
+    prices <- Cl(data)
+    n <- nrow(data)
+    current_price <- round(as.numeric(tail(prices, 1)), 2)
+    start_price <- as.numeric(prices[1])
+    
+    data.frame(
+      Symbol = symbol,
+      Last_Price = current_price,
+      Return_12M = round(((current_price - start_price) / start_price) * 100, 2),
+      Return_6M = round(((current_price - as.numeric(prices[max(1, n-126)])) /
+                          as.numeric(prices[max(1, n-126)])) * 100, 2),
+      Return_3M = round(((current_price - as.numeric(prices[max(1, n-63)])) /
+                          as.numeric(prices[max(1, n-63)])) * 100, 2),
+      Return_1M = round(((current_price - as.numeric(prices[max(1, n-21)])) /
+                          as.numeric(prices[max(1, n-21)])) * 100, 2),
+      High_52W = round(max(as.numeric(Hi(data)), na.rm = TRUE), 2),
+      Low_52W = round(min(as.numeric(Lo(data)), na.rm = TRUE), 2),
+      Pct_From_High = round(((current_price - max(as.numeric(Hi(data)), na.rm = TRUE)) /
+                              max(as.numeric(Hi(data)), na.rm = TRUE)) * 100, 2),
+      stringsAsFactors = FALSE
+    )
+  }, error = function(e) NULL)
+}
+
+all_sector_stocks <- list()
+for (etf in names(sector_holdings)) {
+  sector_info <- sector_holdings[[etf]]
+  sector_results_stocks <- data.frame()
+  for (stock in sector_info$stocks) {
+    result <- fetch_stock_performance(stock, start_date_1y, end_date)
+    if (!is.null(result)) sector_results_stocks <- rbind(sector_results_stocks, result)
+    Sys.sleep(0.2)
+  }
+  if (nrow(sector_results_stocks) > 0) {
+    all_sector_stocks[[etf]] <- sector_results_stocks %>%
+      arrange(desc(Return_12M)) %>%
+      head(10) %>%
+      mutate(Rank = row_number())
+  }
+}
+
+# Combine all stock results
+all_stocks_combined <- bind_rows(
+  lapply(names(all_sector_stocks), function(etf) {
+    all_sector_stocks[[etf]] %>%
+      mutate(Sector_ETF = etf, Sector_Name = sector_holdings[[etf]]$name)
+  })
+)
+```
+
+
+# PART 1: Sector ETF Performance {.tabset}
+
+## Daily Performance
+
+```{r sector-daily-table, echo=FALSE}
+daily_df <- sector_results %>%
+  mutate(
+    `Change %` = sprintf("%+.2f%%", Change_Pct),
+    `Trend Strength %` = sprintf("%.2f%% %s", Trend_Pct, Trend_Label),
+    `Regime` = sprintf("%d %s", Regime_Score, Regime_Label)
+  ) %>%
+  select(Symbol, Sector, Last, `Change %`, `Trend Strength %`, Regime)
+
+daily_table <- daily_df %>%
+  gt() %>%
+  tab_header(title = md("**SPDR SECTOR FUNDs - Daily Performance**"),
+             subtitle = sprintf("As of %s", Sys.Date())) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#1a5c1a")),
+            locations = cells_title()) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#333333")),
+            locations = cells_column_labels()) %>%
+  tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+  tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+  cols_align(align = "center", columns = c(Symbol, `Change %`, `Trend Strength %`, Regime)) %>%
+  cols_align(align = "right", columns = Last)
+
+for (i in 1:nrow(sector_results)) {
+  daily_table <- daily_table %>%
+    tab_style(style = cell_fill(color = get_row_color(sector_results$Change_Pct[i])),
+              locations = cells_body(rows = i))
+}
+
+daily_table %>% tab_options(table.background.color = "#1a1a2e", table.font.size = px(14))
+```
+
+
+## Long-Term Returns
+
+```{r sector-longterm-table, echo=FALSE}
+lt_df <- sector_results %>%
+  arrange(desc(Ten_Year)) %>%
+  mutate(
+    `YTD` = sprintf("%+.1f%%", YTD_Return),
+    `1 Year` = sprintf("%+.1f%%", One_Year),
+    `3 Year` = sprintf("%+.1f%%", Three_Year),
+    `5 Year` = sprintf("%+.1f%%", Five_Year),
+    `10 Year` = sprintf("%+.1f%%", Ten_Year),
+    `Vol (Ann.)` = sprintf("%.1f%%", Volatility)
+  ) %>%
+  select(Symbol, Sector, Last, YTD, `1 Year`, `3 Year`, `5 Year`, `10 Year`, `Vol (Ann.)`)
+
+lt_df %>%
+  gt() %>%
+  tab_header(title = md("**Sector ETF Long-Term Returns**"),
+             subtitle = sprintf("Multi-timeframe returns as of %s | 10 Years of Data", Sys.Date())) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#2c3e50")),
+            locations = cells_title()) %>%
+  tab_style(style = list(cell_text(color = "white"), cell_fill(color = "#34495e")),
+            locations = cells_column_labels()) %>%
+  tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+  tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+  cols_align(align = "center", columns = everything()) %>%
+  tab_options(table.background.color = "#1a1a2e", table.font.size = px(14))
+```
+
+
+## 10-Year Normalized Chart
+
+```{r sector-chart, echo=FALSE, fig.width=14, fig.height=7}
+chart_data <- data.frame()
+for (sym in names(etf_data)) {
+  data <- etf_data[[sym]]
+  if (is.null(data)) next
+  prices <- Cl(data)
+  normalized <- as.numeric(prices) / as.numeric(prices[1]) * 100
+  df <- data.frame(Date = index(data), Price = normalized, Symbol = sym, stringsAsFactors = FALSE)
+  chart_data <- rbind(chart_data, df)
+}
+chart_data <- chart_data %>% left_join(sector_etfs, by = "Symbol")
+
+ggplot(chart_data, aes(x = Date, y = Price, color = Symbol)) +
+  geom_line(linewidth = 0.8, alpha = 0.85) +
+  labs(title = "SPDR Sector ETFs - 10 Year Normalized Performance (Base = 100)",
+       subtitle = sprintf("From %s to %s", start_date_10y, end_date),
+       x = "", y = "Normalized Price (Base 100)", color = "Sector ETF") +
+  theme_dark() +
+  theme(
+    plot.background = element_rect(fill = "#1a1a2e"),
+    panel.background = element_rect(fill = "#16213e"),
+    legend.background = element_rect(fill = "#1a1a2e"),
+    legend.text = element_text(color = "white", size = 10),
+    legend.title = element_text(color = "white"),
+    axis.text = element_text(color = "white"),
+    axis.title = element_text(color = "white"),
+    plot.title = element_text(color = "#00ff88", size = 16, face = "bold"),
+    plot.subtitle = element_text(color = "#aaaaaa"),
+    panel.grid.major = element_line(color = "#2a2a4a"),
+    panel.grid.minor = element_blank()
+  ) +
+  geom_hline(yintercept = 100, linetype = "dashed", color = "gray50", alpha = 0.7)
+```
+
+
+# PART 2: Top 10 Stocks Per Sector (12-Month Performance)
+
+## Technology (XLK)
+
+```{r xlk-stocks, echo=FALSE}
+make_sector_stock_table("XLK", all_sector_stocks[["XLK"]], "Technology")
+```
+
+## Industrial (XLI)
+
+```{r xli-stocks, echo=FALSE}
+make_sector_stock_table("XLI", all_sector_stocks[["XLI"]], "Industrial")
+```
+
+## Utilities (XLU)
+
+```{r xlu-stocks, echo=FALSE}
+make_sector_stock_table("XLU", all_sector_stocks[["XLU"]], "Utilities")
+```
+
+## Consumer Discretionary (XLY)
+
+```{r xly-stocks, echo=FALSE}
+make_sector_stock_table("XLY", all_sector_stocks[["XLY"]], "Consumer Discretionary")
+```
+
+## Financial (XLF)
+
+```{r xlf-stocks, echo=FALSE}
+make_sector_stock_table("XLF", all_sector_stocks[["XLF"]], "Financial")
+```
+
+## Materials (XLB)
+
+```{r xlb-stocks, echo=FALSE}
+make_sector_stock_table("XLB", all_sector_stocks[["XLB"]], "Materials")
+```
+
+## Communication (XLC)
+
+```{r xlc-stocks, echo=FALSE}
+make_sector_stock_table("XLC", all_sector_stocks[["XLC"]], "Communication")
+```
+
+## Health Care (XLV)
+
+```{r xlv-stocks, echo=FALSE}
+make_sector_stock_table("XLV", all_sector_stocks[["XLV"]], "Health Care")
+```
+
+## Consumer Staples (XLP)
+
+```{r xlp-stocks, echo=FALSE}
+make_sector_stock_table("XLP", all_sector_stocks[["XLP"]], "Consumer Staples")
+```
+
+## Real Estate (XLRE)
+
+```{r xlre-stocks, echo=FALSE}
+make_sector_stock_table("XLRE", all_sector_stocks[["XLRE"]], "Real Estate")
+```
+
+## Energy (XLE)
+
+```{r xle-stocks, echo=FALSE}
+make_sector_stock_table("XLE", all_sector_stocks[["XLE"]], "Energy")
+```
+
+
+# PART 3: Overall Best & Worst Performers
+
+## Top 20 Best Performing Stocks (All Sectors)
+
+```{r top-20-best, echo=FALSE}
+top_20 <- all_stocks_combined %>%
+  arrange(desc(Return_12M)) %>%
+  head(20) %>%
+  mutate(Rank = row_number()) %>%
+  select(Rank, Symbol, Sector_Name, Last_Price, Return_12M, Return_6M, Return_3M, Return_1M, Pct_From_High) %>%
+  rename(`#` = Rank, Sector = Sector_Name, Price = Last_Price,
+         `12M %` = Return_12M, `6M %` = Return_6M, `3M %` = Return_3M,
+         `1M %` = Return_1M, `From 52W Hi` = Pct_From_High)
+
+tbl_top <- top_20 %>%
+  gt() %>%
+  tab_header(title = md("**TOP 20 BEST Performing Stocks Across All Sectors**"),
+             subtitle = md(sprintf("*Ranked by 12-Month Return | %s to %s*",
+                                   end_date - years(1), end_date))) %>%
+  fmt_number(columns = Price, decimals = 2) %>%
+  fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`, `From 52W Hi`),
+             decimals = 1, force_sign = TRUE) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#1a5c1a")),
+            locations = cells_title()) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#333333")),
+            locations = cells_column_labels()) %>%
+  tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+  tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+  cols_align(align = "center", columns = everything()) %>%
+  data_color(columns = `12M %`, palette = c("#f39c12", "#27ae60"), domain = NULL) %>%
+  tab_options(table.background.color = "#1a1a2e", table.font.size = px(13))
+
+tbl_top
+```
+
+
+## Top 20 Worst Performing Stocks (All Sectors)
+
+```{r top-20-worst, echo=FALSE}
+bottom_20 <- all_stocks_combined %>%
+  arrange(Return_12M) %>%
+  head(20) %>%
+  mutate(Rank = row_number()) %>%
+  select(Rank, Symbol, Sector_Name, Last_Price, Return_12M, Return_6M, Return_3M, Return_1M, Pct_From_High) %>%
+  rename(`#` = Rank, Sector = Sector_Name, Price = Last_Price,
+         `12M %` = Return_12M, `6M %` = Return_6M, `3M %` = Return_3M,
+         `1M %` = Return_1M, `From 52W Hi` = Pct_From_High)
+
+tbl_bottom <- bottom_20 %>%
+  gt() %>%
+  tab_header(title = md("**TOP 20 WORST Performing Stocks Across All Sectors**"),
+             subtitle = md(sprintf("*Ranked by 12-Month Return (Ascending) | %s to %s*",
+                                   end_date - years(1), end_date))) %>%
+  fmt_number(columns = Price, decimals = 2) %>%
+  fmt_number(columns = c(`12M %`, `6M %`, `3M %`, `1M %`, `From 52W Hi`),
+             decimals = 1, force_sign = TRUE) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#8b0000")),
+            locations = cells_title()) %>%
+  tab_style(style = list(cell_text(color = "white", weight = "bold"),
+                          cell_fill(color = "#333333")),
+            locations = cells_column_labels()) %>%
+  tab_style(style = cell_text(color = "white"), locations = cells_body()) %>%
+  tab_style(style = cell_text(weight = "bold"), locations = cells_body(columns = Symbol)) %>%
+  cols_align(align = "center", columns = everything()) %>%
+  data_color(columns = `12M %`, palette = c("#c0392b", "#f39c12"), domain = NULL) %>%
+  tab_options(table.background.color = "#1a1a2e", table.font.size = px(13))
+
+tbl_bottom
+```
+
+
+# PART 4: Visualizations
+
+## Sector Average Returns (Bar Chart)
+
+```{r sector-bar-chart, echo=FALSE, fig.width=14, fig.height=8}
+sector_avg <- all_stocks_combined %>%
+  group_by(Sector_ETF, Sector_Name) %>%
+  summarize(
+    Avg_12M = mean(Return_12M, na.rm = TRUE),
+    Best_Stock = Symbol[which.max(Return_12M)],
+    Best_Return = max(Return_12M, na.rm = TRUE),
+    Worst_Stock = Symbol[which.min(Return_12M)],
+    Worst_Return = min(Return_12M, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Avg_12M))
+
+ggplot(sector_avg, aes(x = reorder(Sector_Name, Avg_12M), y = Avg_12M, fill = Avg_12M)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%+.1f%%", Avg_12M)),
+            hjust = ifelse(sector_avg$Avg_12M > 0, -0.1, 1.1),
+            color = "white", size = 4) +
+  coord_flip() +
+  scale_fill_gradient2(low = "#c0392b", mid = "#f39c12", high = "#27ae60", midpoint = 0) +
+  labs(title = "Average 12-Month Return by Sector (Top 10 Stocks per Sector)",
+       subtitle = sprintf("%s to %s", end_date - years(1), end_date),
+       x = "", y = "Average 12-Month Return (%)") +
+  theme_dark() +
+  theme(
+    plot.background = element_rect(fill = "#1a1a2e"),
+    panel.background = element_rect(fill = "#16213e"),
+    legend.position = "none",
+    axis.text = element_text(color = "white", size = 11),
+    axis.title = element_text(color = "white"),
+    plot.title = element_text(color = "#00ff88", size = 16, face = "bold"),
+    plot.subtitle = element_text(color = "#aaaaaa"),
+    panel.grid.major.x = element_line(color = "#2a2a4a"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank()
+  )
+```
+
+
+## Return vs Momentum Scatter
+
+```{r scatter-chart, echo=FALSE, fig.width=12, fig.height=7}
+ggplot(all_stocks_combined, aes(x = Return_3M, y = Return_12M, color = Sector_Name)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_text(aes(label = Symbol), size = 2.5, vjust = -0.8, color = "white", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(title = "All Sector Stocks: 12-Month Return vs 3-Month Momentum",
+       subtitle = "Top-right = Strong long-term AND recent momentum | Bottom-left = Underperformers",
+       x = "3-Month Return (%)", y = "12-Month Return (%)", color = "Sector") +
+  theme_dark() +
+  theme(
+    plot.background = element_rect(fill = "#1a1a2e"),
+    panel.background = element_rect(fill = "#16213e"),
+    legend.background = element_rect(fill = "#1a1a2e"),
+    legend.text = element_text(color = "white", size = 9),
+    legend.title = element_text(color = "white"),
+    axis.text = element_text(color = "white"),
+    axis.title = element_text(color = "white"),
+    plot.title = element_text(color = "#00ff88", size = 14, face = "bold"),
+    plot.subtitle = element_text(color = "#aaaaaa"),
+    panel.grid.major = element_line(color = "#2a2a4a"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Market Summary
+
+```{r market-summary, echo=FALSE}
+leading <- sum(sector_results$Regime_Score == 3)
+improving <- sum(sector_results$Regime_Score == 2)
+weakening <- sum(sector_results$Regime_Score == 1)
+lagging <- sum(sector_results$Regime_Score == 0)
+avg_change <- mean(sector_results$Change_Pct)
+positive <- sum(sector_results$Change_Pct > 0)
+negative <- nrow(sector_results) - positive
+breadth <- ifelse(positive > negative, "BULLISH",
+                  ifelse(negative > positive, "BEARISH", "NEUTRAL"))
+
+best_sector <- sector_avg$Sector_Name[1]
+worst_sector <- sector_avg$Sector_Name[nrow(sector_avg)]
+```
+
+| Metric | Value |
+|--------|-------|
+| **Regime: Leading** | `r leading` sectors |
+| **Regime: Improving** | `r improving` sectors |
+| **Regime: Weakening** | `r weakening` sectors |
+| **Regime: Lagging** | `r lagging` sectors |
+| **Average Daily Change** | `r sprintf("%+.2f%%", avg_change)` |
+| **Market Breadth** | `r positive` up / `r negative` down → **`r breadth`** |
+| **Best Sector (12M Avg)** | `r best_sector` (`r sprintf("%+.1f%%", sector_avg$Avg_12M[1])`) |
+| **Worst Sector (12M Avg)** | `r worst_sector` (`r sprintf("%+.1f%%", sector_avg$Avg_12M[nrow(sector_avg)])`) |
+| **Top Stock Overall** | `r all_stocks_combined$Symbol[which.max(all_stocks_combined$Return_12M)]` (`r sprintf("%+.1f%%", max(all_stocks_combined$Return_12M))`) |
+| **Worst Stock Overall** | `r all_stocks_combined$Symbol[which.min(all_stocks_combined$Return_12M)]` (`r sprintf("%+.1f%%", min(all_stocks_combined$Return_12M))`) |
+
+---
+
+*Source: Yahoo Finance | SPDR State Street Global Advisors*
+*Generated: `r Sys.time()`*
